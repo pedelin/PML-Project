@@ -1,0 +1,121 @@
+---
+title: "PML Project"
+output: html_document
+---
+
+##Data and Data Processing
+Reading and downloading the data from source:  http://groupware.les.inf.puc-rio.br/har.
+```{r,message=FALSE}
+library(caret);library(knitr)
+library(randomForest)
+file_training <- "pml-training.csv"
+file_testing <- "pml-testing.csv"
+if(!file.exists(file_training) | !file.exists(file_testing)){
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",file_training)
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",file_testing)
+}
+raw_training <- read.csv(file_training,header = TRUE)
+testing <- read.csv(file_testing,header = TRUE)
+```
+First of all a validation dataset is created to be able to assess out of sample error rate of the trained model.
+
+```{r}
+CViter <- createDataPartition(y = raw_training$classe, p = 0.7, list = FALSE)
+raw_training <- raw_training[CViter,]
+Validation <- raw_training[-CViter,]
+dim(raw_training)
+dim(Validation)
+```
+
+```{r}
+sum(is.na(raw_training))
+sum(is.na(testing))
+```
+It appears to be a lot of NA's in the data so let's deal with that due to that there can be problems creating a model with a lot of NA's. First the ratio of NA's in each column is checked.
+
+```{r}
+NA_ratio <- colSums(is.na(raw_training))/dim(raw_training)[1]
+NA_columns <- raw_training[,NA_ratio!=0]
+min(colSums(is.na(NA_columns))/dim(NA_columns)[1])
+```
+The column with the least NA ratio, that is not zero, still has `r 100*min(colSums(is.na(NA_columns))/dim(NA_columns)[1])`% NA's so all the columns containing NA's are removed.
+
+```{r}
+NAname <- colnames(NA_columns)
+training <- raw_training[,-which(colnames(raw_training) %in% NAname)]
+```
+A new variable is created to keep track on the deleted columns in the training dataset
+```{r}
+Removed_Cols <- NAname
+```
+Lastly the columns containing user_name, timestamps, x etc. is removed in the dataset.
+```{r}
+Removed_Cols <- append(Removed_Cols,colnames(training[,c(1:7)]))
+training <- training[,-c(1:6)]
+
+```
+The training dataset dimension is now: `r dim(training)`
+
+##Modelling
+Now the columns with near zero variance is removed from the training data set.
+```{r}
+#Removing columns from training data set
+near_zero_idx <- nearZeroVar(training,saveMetrics = TRUE)
+Removed_Cols <- append(Removed_Cols,colnames(training[,near_zero_idx$nzv]))
+training <- training[,!near_zero_idx$nzv]
+dim(training)
+
+```
+The correlation between the variables is checked with correlation analysis:
+```{r}
+Corr <- findCorrelation(cor(training[,-length(training)]),cutoff = 0.8)
+length(Corr)
+```
+As seen above `r length(Corr)` variables are strongly correlated. Five folded cross validation together with Principal components analysis will be used to avoid overfitting.
+```{r}
+train_control <- trainControl(method = "cv", number = 5 , preProcOptions="pca")
+```
+
+When modelling the data several different models will be tested. The models are random forest, gbm (boosted tree), lda (linear discriminant analysis), treebag 
+```{r,message=FALSE,cache=TRUE}
+library(caret)
+model_rf <- train(classe ~., data = training,method = "rf",trControl = train_control)
+
+model_gbm <- train(classe ~., data = training,method = "gbm",trControl = train_control,verbose = FALSE)
+
+model_lda <- train(classe ~., data = training,method = "lda",trControl = train_control)
+
+model_treebag <- train(classe ~., data = training,method = "treebag",trControl = train_control)
+```
+To enable a choice of model the maximum minimum accuracy of the four models are used. The model with the largest minimum accuracy is used to assess the testing data.
+```{r}
+min(model_rf$results$Accuracy)
+min(model_gbm$results$Accuracy)
+min(model_lda$results$Accuracy)
+min(model_treebag$results$Accuracy)
+```
+The models to be chosen is the random forest and the treebag models. The "Validation" data set is used to assess the out of sample error rate.  
+```{r,message=FALSE}
+pred_rf <- predict(model_rf,Validation)
+confusionMatrix(pred_rf,Validation$classe)$table
+pred_treebag <- predict(model_treebag,Validation)
+confusionMatrix(pred_treebag,Validation$classe)$table
+OOSER_rf <- sum(pred_rf!=Validation$classe)/length(pred_rf)
+OOSER_treebag<- sum(pred_treebag!=Validation$classe)/length(pred_treebag)
+```
+The out of sample error rate for the models is `r OOSER_rf*100`% for random forest and `r OOSER_treebag*100`% for the treebag model. Due to 100% prediction accuracy for the two models the in sample error rate is used to quantify the out of sample error rate. The random forest model is used to quantify the error rate.
+```{r}
+ISER <- (1-min(model_rf$results$Accuracy))*100
+```
+The in sample error rate is `r ISER`% and this is by definition the minimum value for the out of sample error.
+
+##Prediction of the testing set
+The random forest model is used to predict the testing set.
+```{r}
+test_pred <- predict(model_rf,testing)
+test_pred
+```
+
+The random forest model predicted all the testing data accurate.
+
+
